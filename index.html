@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en" >
+   <head>
+      <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, user-scalable=no">
+      <meta http-equiv="Content-type" content="text/html; charset=UTF-8" >
+      <script type="text/javascript" src="mat4.js"></script>
+      <title> STEFAN BlackJack </title>
+      <script type=" vertex shader ">
+      
+         uniform   mat4 P; // projection matrix (as in openGL)
+         uniform   mat4 MV;  // model view matrix (model position)
+         uniform   vec3 brand; // draw everything in this color
+         
+         attribute vec3 pos; // current vertex
+         
+         varying   vec3 color; // emit var to fragments
+         
+         void main() {
+            color = brand;
+            gl_Position = P * MV * vec4( pos, 1.0 ); } // ret
+            
+      </script><script type=" fragment shader ">
+         precision mediump float;
+         
+         varying   vec3 color; // collect from vertex shader above
+         
+         void main( void ){
+            gl_FragColor = vec4( color, 1.0 ); } // ret
+            
+      </script><script type="text/javascript">
+
+         pos_ = MV_ = P_ = brand_ = null; // pointers to vertex shader env   
+      
+         P = mat4.create();
+         
+         MV = mat4.create();
+         MV_stack = [];
+
+         function MV_push(){
+            var copy = mat4.create();
+            mat4.set( MV, copy );
+            MV_stack.push( copy ); }
+
+         function MV_pop(){
+            if( MV_stack.length == 0 )
+               throw 'Invalid popMatrix!';
+            MV = MV_stack.pop(); }
+
+         con = console;
+         win = window;
+         doc = document;
+         
+         but = null; // button; to be linked after document load
+         
+         canvas = doc.createElement( 'canvas' );
+         
+         width = null; // to be filled after canvas include
+         height = null;
+
+         dpr = win.devicePixelRatio ? win.devicePixelRatio : 1.0;
+
+         g = canvas.getContext( 'webgl',
+            { preserveDrawingBuffer: true } // so we can read pixels after
+               );
+
+         cc = [ 0, 0, 0, 0.9 ]; // backgruond color
+
+         cards = []; // on the deck
+         moved = []; // all other cards
+
+         cardA = null;
+         cardB = null;
+
+         zoom = -22; // camera distance in centimeters
+         tilt_x = -Math.PI/8; // rad
+         tilt_z = 0; // rad
+
+         pix = new Uint8Array( 4 ); // the pixel under the cursor
+         sel = null; // selected card
+
+         function resize(){ // call after canvas include
+            width = canvas.width = canvas.clientWidth*dpr; // from css width:100% to pixels
+            height = canvas.height = canvas.clientHeight*dpr;
+            g.viewport( 0, 0, width, height ); }
+
+         function set_view(){ // upload current view transformation stack to gpu
+            g.uniformMatrix4fv( P_, false, P );
+            g.uniformMatrix4fv( MV_, false, MV ); }
+
+         card_width = 6; card_height = 9; // ~ centimeters
+         card_model = [ card_width/2, card_height/2, 0,
+                         card_width/2,-card_height/2, 0,
+                        -card_width/2, card_height/2, 0,
+                        -card_width/2,-card_height/2, 0 ]
+
+         table_width = 30; table_height = 20; // cm (min 24 x 18 (4x2 cards))
+         function table_pos( n ){ // return world coordinates from enumerated table region n
+            // this devides the table logically to 8 parts
+            // part number 0 is lower left, part 3 is lower right, 7 is top right
+            return [ (table_width/8) + (table_width/4)*(n%4) - table_width/2,
+                       (table_height/4) + (table_height/2)*(Math.floor(n/4)) - table_height/2,
+                       0.01 ]; }
+         slot1 = table_pos(4);
+         slot2 = table_pos(5);
+         slot3 = table_pos(6);
+         slotA = table_pos(1);
+         slotB = table_pos(2);
+         trash = table_pos(-1);
+         table_model = [ table_width/2, table_height/2, 0,
+                         table_width/2,-table_height/2, 0,
+                        -table_width/2, table_height/2, 0,
+                        -table_width/2,-table_height/2, 0 ]
+
+         function init(){
+         
+            vShader = g.createShader( g.VERTEX_SHADER );
+            g.shaderSource( vShader, doc.scripts[1].text );
+            g.compileShader( vShader );
+            if( !g.getShaderParameter( vShader, g.COMPILE_STATUS ) )
+               alert( 'error in vertex shader: ' + g.getShaderInfoLog( vShader ) );
+
+            fShader = g.createShader( g.FRAGMENT_SHADER );
+            g.shaderSource( fShader, doc.scripts[2].text );
+            g.compileShader( fShader);
+            if( !g.getShaderParameter( fShader, g.COMPILE_STATUS ) )
+               alert( 'error in fragment shader: ' + g.getShaderInfoLog( fShader ) );
+
+            program = g.createProgram();
+            g.attachShader( program, vShader );
+            g.attachShader( program, fShader );
+            g.linkProgram( program);
+            if( !g.getProgramParameter( program, g.LINK_STATUS ) )
+               alert( 'error in shader program' );
+               
+            g.useProgram( program);
+
+            pos_ = g.getAttribLocation( program, 'pos' ); g.enableVertexAttribArray( pos_ );
+            MV_ = g.getUniformLocation( program, 'MV' );
+            P_ = g.getUniformLocation( program, 'P' );
+            brand_ = g.getUniformLocation( program, 'brand' );
+            
+            card_model_ = g.createBuffer();
+            g.bindBuffer( g.ARRAY_BUFFER, card_model_ );
+            g.bufferData( g.ARRAY_BUFFER, new Float32Array( card_model ), g.STATIC_DRAW );
+
+            table_model_ = g.createBuffer();
+            g.bindBuffer( g.ARRAY_BUFFER, table_model_ );
+            g.bufferData( g.ARRAY_BUFFER, new Float32Array( table_model ), g.STATIC_DRAW );
+
+            g.enable( g.DEPTH_TEST );
+            g.depthFunc( g.LEQUAL )
+            
+            g.clearColor( cc[0], cc[1], cc[2], cc[3] ); }
+
+         function draw_table( col ){
+            MV_push();
+            g.bindBuffer( g.ARRAY_BUFFER, table_model_ );
+            g.vertexAttribPointer( pos_, 3, g.FLOAT, false, 0, 0 );
+            g.uniform3fv( brand_, col );
+            set_view();
+            g.drawArrays( g.TRIANGLE_STRIP, 0, 4 );
+            MV_pop();            
+         }
+
+         function draw_card( col, pos, pos2, q ){
+            // this draws a card somewhere between two positions in space
+            // q = 0 means 100% first position; q=1 means 100% second position
+            // additionally a lift and rotation are added
+            MV_push();
+            mat4.translate( MV, [ pos[0] + ( pos2[0]-pos[0] )*q,
+                                  pos[1] + ( pos2[1]-pos[1] )*q,
+                                  pos[2] + ( pos2[2]-pos[2] )*q  +Math.sin( Math.PI*q )*card_width/1.5] );                                     
+            mat4.rotate( MV, Math.PI*q, [ 0, 1, 0 ] );
+            g.bindBuffer( g.ARRAY_BUFFER, card_model_ );
+            g.vertexAttribPointer( pos_, 3, g.FLOAT, false, 0, 0 );
+            g.uniform3fv( brand_, col );
+            set_view();
+            g.drawArrays( g.TRIANGLE_STRIP, 0, 4 );
+            MV_pop();
+         }
+
+         class card {
+            constructor( col, n ){
+               // color and n
+               // n is id and initial Z pos simultaneously
+               this.col = col;
+               this.pos = table_pos(7);
+               this.pos[2] += n * 0.02;
+               this.pos2 = this.pos;
+               this.q = null; }
+            moveto( newpos ){ // start anim
+               if( this == cardA ){
+                  but.disabled = true;
+                  cardA = null; }
+               if( this == cardB ){
+                  but.disabled = true;
+                  cardB = null; }
+               this.pos2 = newpos;
+               this.q = 0.0; }
+            draw(){
+               // this draw function handles animation timing. no tick() or update()
+               if( this.q == null ) // not in animation
+                  draw_card( this.col, this.pos, this.pos2, 0 );
+               else if( this.q > 1 ){ // animation end
+                  if( this.pos2 == slotA ) cardA = this;
+                  else if( this.pos2 == slotB ) cardB = this;
+                  if( cardA != null && cardB != null )
+                     but.disabled = false;
+                  else but.disabled = true;
+                  this.pos = this.pos2;
+                  this.q = null;
+                  draw_card( this.col, this.pos, this.pos2, 0 );
+               } else { // anim++
+                  this.q += 0.05; // 20 frames total
+                  draw_card( this.col, this.pos, this.pos2, this.q );
+               }
+            }
+         }
+
+         function popto( pos ){ // moves the top card from the deck to somewhere else
+            var x = cards.pop();
+            if( !x ){
+               alert( 'It`s Over Man!' );
+               doc.location = doc.location; }
+            moved.push( x );
+            x.moveto( pos );
+            return x;
+         }
+                  
+         function draw(){
+            g.clear( g.COLOR_BUFFER_BIT | g.DEPTH_BUFFER_BIT );
+            
+            mat4.perspective( 70, width / height, 0.1, 100.0, P );
+            mat4.translate( P, [ 0, 0, zoom ] );
+            mat4.rotate( P, tilt_x, [ 1, 0, 0 ] );
+            mat4.rotate( P, tilt_z, [ 0, 0, 1 ] );
+            mat4.identity( MV );
+
+            draw_table( [ 0.1 ,0.3, 0 ] );
+            
+            for( var i=0; i<cards.length; i++ ) cards[i].draw();
+            for( var i=0; i<moved.length; i++ ) moved[i].draw();
+            
+            win.requestAnimationFrame( draw );
+         }
+         
+         function pick( e ){
+            g.readPixels( e.clientX, height - e.clientY, 1, 1, g.RGBA, g.UNSIGNED_BYTE, pix );
+            if( cardA &&
+               pix[0] == Math.round( cardA.col[0]*255 ) &&
+               pix[1] == Math.round( cardA.col[1]*255 ) &&
+               pix[2] == Math.round( cardA.col[2]*255 ) )
+               sel = cardA; 
+            else if( cardB &&
+               pix[0] == Math.round( cardB.col[0]*255 ) &&
+               pix[1] == Math.round( cardB.col[1]*255 ) &&
+               pix[2] == Math.round( cardB.col[2]*255 ) )
+               sel = cardB;
+            else
+               sel = null;
+         }
+         
+         function mouse_move( e ){
+            pick( e );
+            if( sel ) canvas.style.cursor = 'pointer';
+            else canvas.style.cursor = 'default';
+            tilt_x = -Math.PI/8 -Math.PI*(e.clientY/height)/8;
+            tilt_z = Math.PI/8 -Math.PI*(e.clientX/width)/4 ; }
+         
+         function mouse_click( e ){
+            pick( e );
+            if( sel ){
+               sel.moveto( trash );
+               win.setTimeout( function(){ popto( sel == cardA ? slotA : slotB ); }, 200 ); } }
+
+         function hit(){
+            cardA.moveto( trash );
+            win.setTimeout( function(){ cardB.moveto( trash ); }, 200 );
+            win.setTimeout( function(){ popto( slotA ); }, 400 );
+            win.setTimeout( function(){ popto( slotB ); }, 600 );
+         }
+
+         win.addEventListener( 'load', function(){
+         
+            but = doc.getElementsByTagName('button')[0];
+            
+            doc.body.appendChild( canvas );
+            
+            init();
+            resize();
+            win.addEventListener( 'resize', resize );
+            
+            canvas.addEventListener( 'mousemove', mouse_move );
+            canvas.addEventListener( 'click', mouse_click );
+            
+            for( var i=0; i<52; i++ )
+               cards[i] = new card( [ Math.random(), Math.random(), Math.random() ], i );
+
+            win.setTimeout( function(){ popto( slot1 ); }, 200 );
+            win.setTimeout( function(){ popto( slot2 ); }, 400 );
+            win.setTimeout( function(){ popto( slot3 ); }, 600 );
+            win.setTimeout( function(){ popto( slotA ); }, 800 );
+            win.setTimeout( function(){ popto( slotB ); }, 1000 );
+
+            win.requestAnimationFrame( draw );
+         })
+                     
+      </script>
+      <style type="text/css">
+
+         html, html * {
+            margin: 0; padding: 0;
+            top: 0; left: 0; right: 0; bottom: 0;
+            overflow: hidden;
+            text-align: center;
+            cursor: default;
+            user-select: none  }
+         
+         body, canvas {
+            position: fixed; margin: auto;
+            width: 100%;
+            height: 100%  }
+            
+         canvas {
+            z-index: -1 }
+         
+         h1 {
+          color: orange;
+          font-size: 300%
+         }
+         
+         button {
+            position: absolute; margin: auto;
+            top: 50%;
+            left: 75%;
+            height: 15%;
+            width: 20%;
+            font-size: 300%;
+            cursor: pointer;
+            border-radius: 100%;
+            outline: none;
+         }
+
+      </style>
+   </head>
+   <body>
+      <h1 > Black Jack </h1>
+      <button disabled="true" onclick="hit()"> Hit </button>
+   </body>
+</html>
