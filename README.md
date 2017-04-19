@@ -1,2 +1,2 @@
 # jack
-webgl
+http://stefanyovev.com/jack
